@@ -1,0 +1,129 @@
+#Dockerをインストールする用のEC2作成
+AWSTemplateFormatVersion: 2010-09-09
+Description: create ec2 for docker and git
+
+Parameters:
+  projectName:
+    Type: String
+    Default: ec2-step.yml
+
+# ------------------------------------------------------------#
+# VPC, パブリックサブネット, IGW，ルートテーブル，セキュリティグループを作成する
+# ------------------------------------------------------------#
+Resources:
+  myVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 192.168.0.0/21
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-vpc
+  subnetPublic1a:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: ap-northeast-1a
+      VpcId: !Ref myVPC
+      CidrBlock: 192.168.0.0/24
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-subnet-public-1a
+  igwName:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-igw
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref myVPC
+      InternetGatewayId: !Ref igwName
+  routeTablePublic:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref myVPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${projectName}-rt-public
+  routePublic:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref routeTablePublic
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref igwName
+  routeTableAssocPublic1a:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref subnetPublic1a
+      RouteTableId: !Ref routeTablePublic
+  secGroupName:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${projectName}-ssh-sg
+      GroupDescription: groupDescription-sg
+      VpcId: !Ref myVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+
+# ------------------------------------------------------------#
+# IAMロール作成とアタッチ
+# ------------------------------------------------------------#
+  ec2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonECS_FullAccess
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryFullAccess
+        - arn:aws:iam::aws:policy/AmazonEventBridgeFullAccess
+        - arn:aws:iam::aws:policy/AWSCodePipeline_FullAccess
+        - arn:aws:iam::aws:policy/AWSCodeCommitFullAccess
+        - arn:aws:iam::aws:policy/AWSCodeBuildAdminAccess
+      RoleName: !Sub ${projectName}-Role
+
+  iamInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref ec2Role
+
+# ------------------------------------------------------------#
+# EC2作成（キーペアは「ecs-teamb.pemを作成しておく」）
+# ------------------------------------------------------------#
+  myEC2Instance:
+      Type: AWS::EC2::Instance
+      Properties:
+        KeyName: ecs-teamb
+        ImageId: ami-020283e959651b381
+        InstanceType: t2.micro
+        NetworkInterfaces:
+          - AssociatePublicIpAddress: "true"
+            DeviceIndex: "0"
+            SubnetId: !Ref subnetPublic1a
+            GroupSet:
+            - !Ref secGroupName
+        IamInstanceProfile: !Ref iamInstanceProfile
+        UserData: !Base64 |
+          #!/bin/bash
+          yum update -y
+          yum install -y docker
+          systemctl enable docker
+          service docker start
+          usermod -a -G docker ec2-user
+          yum install -y git
+        Tags:
+          - Key: Name
+            Value: !Sub ${projectName}
